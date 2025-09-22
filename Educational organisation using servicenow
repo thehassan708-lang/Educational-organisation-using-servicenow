@@ -1,0 +1,166 @@
+// ServiceNowClient.java
+import java.net.URI;
+import java.net.http.*;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.Map;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+/**
+ * Minimal ServiceNow Table API client using Java 11 HttpClient.
+ * - Uses Basic Auth (username/password) or token if provided.
+ * - Example usage at bottom demonstrates creating a student request record.
+ */
+public class ServiceNowClient {
+    private final String baseUrl; // e.g. https://dev12345.service-now.com
+    private final String authHeader; // "Basic ..." or "Bearer ..."
+    private final HttpClient http;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    // Constructor with Basic Auth
+    public ServiceNowClient(String baseUrl, String username, String password) {
+        this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
+        String creds = username + ":" + password;
+        this.authHeader = "Basic " + Base64.getEncoder().encodeToString(creds.getBytes());
+        this.http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+
+    // Constructor with Bearer token (OAuth or API token)
+    public ServiceNowClient(String baseUrl, String bearerToken, boolean isToken) {
+        this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length()-1) : baseUrl;
+        this.authHeader = "Bearer " + bearerToken;
+        this.http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+
+    // Create a record in a table (returns response JSON as string)
+    public String createRecord(String tableName, Map<String, Object> fields) throws Exception {
+        String url = baseUrl + "/api/now/table/" + tableName;
+        String body = mapper.writeValueAsString(fields);
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(20))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", authHeader)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        int s = resp.statusCode();
+        if (s >= 200 && s < 300) return resp.body();
+        else throw new RuntimeException("Create failed: HTTP " + s + " -> " + resp.body());
+    }
+
+    // Get a record by sys_id
+    public String getRecord(String tableName, String sysId) throws Exception {
+        String url = baseUrl + "/api/now/table/" + tableName + "/" + sysId;
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .header("Accept", "application/json")
+                .header("Authorization", authHeader)
+                .GET()
+                .build();
+
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        int s = resp.statusCode();
+        if (s >= 200 && s < 300) return resp.body();
+        else throw new RuntimeException("Get failed: HTTP " + s + " -> " + resp.body());
+    }
+
+    // Update a record (PATCH)
+    public String updateRecord(String tableName, String sysId, Map<String, Object> fields) throws Exception {
+        String url = baseUrl + "/api/now/table/" + tableName + "/" + sysId;
+        String body = mapper.writeValueAsString(fields);
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(20))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", authHeader)
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        int s = resp.statusCode();
+        if (s >= 200 && s < 300) return resp.body();
+        else throw new RuntimeException("Update failed: HTTP " + s + " -> " + resp.body());
+    }
+
+    // Query records using sysparm_query (returns JSON)
+    public String queryRecords(String tableName, String sysparmQuery) throws Exception {
+        String url = baseUrl + "/api/now/table/" + tableName + "?sysparm_query=" + java.net.URLEncoder.encode(sysparmQuery, "UTF-8")
+                + "&sysparm_limit=50";
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .header("Accept", "application/json")
+                .header("Authorization", authHeader)
+                .GET()
+                .build();
+
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        int s = resp.statusCode();
+        if (s >= 200 && s < 300) return resp.body();
+        else throw new RuntimeException("Query failed: HTTP " + s + " -> " + resp.body());
+    }
+
+    // Example usage
+    public static void main(String[] args) throws Exception {
+        // ---------- CONFIG ----------
+        String instance = "https://dev12345.service-now.com"; // <-- change
+        String username = "admin"; // <-- change
+        String password = "P@ssw0rd"; // <-- change
+        // Alternatively, use bearer token:
+        // String token = "your_oauth_token";
+
+        ServiceNowClient sn = new ServiceNowClient(instance, username, password);
+
+        // Example: create a "student onboarding request" in a custom table u_student_request
+        // Fields must match table column names in ServiceNow (e.g. u_name, u_email, u_course)
+        Map<String, Object> newStudent = Map.of(
+            "u_name", "Aisha Khan",
+            "u_email", "aisha.khan@example.edu",
+            "u_course", "Computer Science - BSc",
+            "u_start_date", "2025-09-01",
+            "u_priority", "2",
+            "short_description", "Student onboarding - request for library card and email"
+        );
+
+        System.out.println("Creating record...");
+        String createResp = sn.createRecord("u_student_request", newStudent);
+        System.out.println("Create response JSON:\n" + createResp);
+
+        // If you want to extract sys_id from the response:
+        ObjectMapper m = new ObjectMapper();
+        ObjectNode root = (ObjectNode) m.readTree(createResp);
+        String sysId = root.at("/result/sys_id").asText();
+        System.out.println("Created sys_id = " + sysId);
+
+        // Fetch the created record
+        String fetched = sn.getRecord("u_student_request", sysId);
+        System.out.println("Fetched record:\n" + fetched);
+
+        // Update the record (example: set state or add note)
+        Map<String, Object> update = Map.of(
+            "comments", "Onboarding approved by registrar",
+            "u_status", "Approved"
+        );
+        String updateResp = sn.updateRecord("u_student_request", sysId, update);
+        System.out.println("Update response:\n" + updateResp);
+
+        // Query recent pending student requests
+        String queryResp = sn.queryRecords("u_student_request", "u_statusISNOTApproved^ORDERBYDESCsys_created_on");
+        System.out.println("Query response:\n" + queryResp);
+    }
+}
